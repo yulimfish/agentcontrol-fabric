@@ -1,0 +1,5 @@
+{
+  "text.agentcontrol.config.title": "AgentControl",
+  "text.agentcontrol.config.capture_mouse": "释放鼠标动作时捕获鼠标：%s",
+  "text.agentcontrol.config.capture_mouse.tooltip": "开启：release_mouse 会关闭透明界面，让 Minecraft 重新捕获鼠标。关闭：release_mouse 会打开透明不暂停界面，让系统鼠标保持释放状态。"
+}

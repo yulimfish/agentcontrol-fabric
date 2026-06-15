@@ -1,0 +1,5 @@
+{
+  "text.agentcontrol.config.title": "AgentControl",
+  "text.agentcontrol.config.capture_mouse": "Capture mouse on release action: %s",
+  "text.agentcontrol.config.capture_mouse.tooltip": "ON: release_mouse closes the transparent screen and lets Minecraft capture the mouse. OFF: release_mouse opens a transparent non-pausing screen so the OS mouse stays released."
+}

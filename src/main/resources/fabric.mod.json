@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "agentcontrol",
+  "version": "${version}",
+  "name": "AgentControl",
+  "description": "Local Fabric client state and action bridge for AI agents over localhost.",
+  "authors": ["yulimfish"],
+  "contact": {},
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "dev.agentcontrol.minecraft.client.AgentControlClientMod"
+    ],
+    "modmenu": [
+      "dev.agentcontrol.minecraft.client.AgentControlModMenu"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  },
+  "suggests": {
+    "modmenu": ">=11.0.0"
+  }
+}

@@ -1,0 +1,9 @@
+.DS_Store
+.gradle/
+build/
+run/
+logs/
+config/
+*.log
+.idea/
+.vscode/
