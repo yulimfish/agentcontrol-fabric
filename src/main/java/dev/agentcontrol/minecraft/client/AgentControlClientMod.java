@@ -2,6 +2,7 @@ package dev.agentcontrol.minecraft.client;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
@@ -14,6 +15,7 @@ import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Hand;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
@@ -45,6 +47,8 @@ public class AgentControlClientMod implements ClientModInitializer {
     private static AgentControlConfig config;
     private volatile boolean running;
     private ServerSocket serverSocket;
+    private AgentControlCache cache;
+    private Identifier currentDimension;
 
     public static AgentControlConfig config() {
         if (config == null) config = AgentControlConfig.load();
@@ -65,8 +69,11 @@ public class AgentControlClientMod implements ClientModInitializer {
             throw new IllegalStateException("Failed to start AgentControl client server on 127.0.0.1:" + PORT, e);
         }
 
+        ClientTickEvents.END_CLIENT_TICK.register(client -> onTick(client));
+
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
             running = false;
+            if (cache != null) cache.save();
             if (serverSocket != null) {
                 try {
                     serverSocket.close();
@@ -74,6 +81,37 @@ public class AgentControlClientMod implements ClientModInitializer {
                 }
             }
         });
+    }
+
+    private void onTick(MinecraftClient client) {
+        if (client.player == null || client.world == null) return;
+
+        Identifier dimension = client.world.getRegistryKey().getValue();
+        if (currentDimension == null || !currentDimension.equals(dimension)) {
+            if (cache != null) cache.save();
+            currentDimension = dimension;
+            cache = new AgentControlCache(dimension);
+        }
+
+        updateCache(client);
+        if (cache != null) cache.saveIfNeededAsync();
+    }
+
+    private void updateCache(MinecraftClient client) {
+        if (cache == null) return;
+        BlockPos center = client.player.getBlockPos();
+        int radius = 4; // Small radius for incremental caching
+        for (int y = -radius; y <= radius; y++) {
+            for (int x = -radius; x <= radius; x++) {
+                for (int z = -radius; z <= radius; z++) {
+                    BlockPos pos = center.add(x, y, z);
+                    BlockState state = client.world.getBlockState(pos);
+                    if (state.isAir()) continue;
+                    String blockId = Registries.BLOCK.getId(state.getBlock()).toString();
+                    cache.recordBlock(pos.getX(), pos.getY(), pos.getZ(), blockId);
+                }
+            }
+        }
     }
 
     private void serve() {
@@ -302,7 +340,8 @@ public class AgentControlClientMod implements ClientModInitializer {
         builder.append("\"environment\":").append(environment(client)).append(',');
         builder.append("\"crosshairTarget\":").append(crosshairTarget(client)).append(',');
         builder.append("\"nearbyBlocks\":").append(nearbyBlocks(client, scanRadius)).append(',');
-        builder.append("\"nearbyEntities\":").append(nearbyEntities(client, 16.0));
+        builder.append("\"nearbyEntities\":").append(nearbyEntities(client, 16.0)).append(',');
+        builder.append("\"cache\":").append(cacheInfo());
         builder.append('}');
         return builder.toString();
     }
@@ -469,6 +508,17 @@ public class AgentControlClientMod implements ClientModInitializer {
                     + "}");
         }
         return "[" + String.join(",", entities) + "]";
+    }
+
+    private String cacheInfo() {
+        if (cache == null) {
+            return "{\"enabled\":false,\"blockCount\":0}";
+        }
+        return "{"
+                + "\"enabled\":true,"
+                + "\"dimension\":\"" + json(currentDimension != null ? currentDimension.toString() : "unknown") + "\","
+                + "\"blockCount\":" + cache.getBlockCount()
+                + "}";
     }
 
     private void send(Socket socket, int status, String body) throws IOException {
