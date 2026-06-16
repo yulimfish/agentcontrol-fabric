@@ -219,6 +219,37 @@ public class AgentControlClientMod implements ClientModInitializer {
                 client.player.setPitch(pitch);
                 return "{\"ok\":true,\"action\":\"look\",\"yaw\":" + round(yaw) + ",\"pitch\":" + round(pitch) + "}";
             }
+            case "look_at" -> {
+                double x = Double.parseDouble(params.getOrDefault("x", String.valueOf(client.player.getX())));
+                double y = Double.parseDouble(params.getOrDefault("y", String.valueOf(client.player.getY())));
+                double z = Double.parseDouble(params.getOrDefault("z", String.valueOf(client.player.getZ())));
+                double dx = x - client.player.getX();
+                double dy = y - client.player.getY();
+                double dz = z - client.player.getZ();
+                double distance = Math.sqrt(dx * dx + dz * dz);
+                float yaw = (float) (-Math.atan2(dx, dz) * 180.0 / Math.PI);
+                float pitch = (float) (-Math.atan2(dy, distance) * 180.0 / Math.PI);
+                client.player.setYaw(yaw);
+                client.player.setPitch(pitch);
+                return "{\"ok\":true,\"action\":\"look_at\",\"yaw\":" + round(yaw) + ",\"pitch\":" + round(pitch) + "}";
+            }
+            case "look_facing" -> {
+                String direction = params.getOrDefault("direction", "south");
+                float yaw;
+                float pitch = 0.0f;
+                switch (direction) {
+                    case "north" -> yaw = 180.0f;
+                    case "south" -> yaw = 0.0f;
+                    case "east" -> yaw = -90.0f;
+                    case "west" -> yaw = 90.0f;
+                    case "up" -> { yaw = client.player.getYaw(); pitch = -90.0f; }
+                    case "down" -> { yaw = client.player.getYaw(); pitch = 90.0f; }
+                    default -> yaw = client.player.getYaw();
+                }
+                client.player.setYaw(yaw);
+                client.player.setPitch(pitch);
+                return "{\"ok\":true,\"action\":\"look_facing\",\"direction\":\"" + json(direction) + "\",\"yaw\":" + round(yaw) + ",\"pitch\":" + round(pitch) + "}";
+            }
             case "attack" -> {
                 boolean ok = false;
                 if (client.interactionManager != null && client.crosshairTarget instanceof EntityHitResult entityHit) {
@@ -284,6 +315,10 @@ public class AgentControlClientMod implements ClientModInitializer {
                 return "{\"ok\":true,\"action\":\"swap_hands\"}";
             }
             case "close_screen" -> {
+                Screen current = client.currentScreen;
+                if (current != null) {
+                    current.close();
+                }
                 client.setScreen(null);
                 return "{\"ok\":true,\"action\":\"close_screen\"}";
             }

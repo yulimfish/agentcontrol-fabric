@@ -63,29 +63,33 @@ jobs:
           fi
           
           # 构建 release notes
-          NOTES="## 编译信息
+          cat > release_notes.md << 'EOF'
+## 编译信息
 
-- **版本**: ${{ steps.version.outputs.mod_version }}
-- **编译时间**: ${{ steps.version.outputs.build_time }}
-- **Minecraft 版本**: 1.21.1
+**版本**: ${{ steps.version.outputs.mod_version }}
+**编译时间**: ${{ steps.version.outputs.build_time }}
+**Minecraft 版本**: 1.21.1
 
-"
+EOF
           
           if [ -n "$CHANGELOG" ]; then
-            NOTES="${NOTES}## 更新内容
+            cat >> release_notes.md << 'EOF'
+## 更新内容
 
-${CHANGELOG}
-
-"
+EOF
+            echo "$CHANGELOG" >> release_notes.md
+            echo "" >> release_notes.md
           fi
           
-          NOTES="${NOTES}## 近期提交
+          cat >> release_notes.md << 'EOF'
+## 近期提交
 
-${COMMITS}
-
-"
+EOF
+          echo "$COMMITS" >> release_notes.md
+          echo "" >> release_notes.md
           
-          NOTES="${NOTES}---
+          cat >> release_notes.md << 'EOF'
+---
 
 ## 安装说明
 
@@ -98,10 +102,7 @@ ${COMMITS}
 - [总仓](https://github.com/yulimfish/agentcontrol)
 - [MCP 服务](https://github.com/yulimfish/agentcontrol-mcp)
 - [文档](https://yulimfish.github.io/agentcontrol-docs/)
-"
-          
-          # 保存到文件，避免多行字符串问题
-          echo "${NOTES}" > release_notes.md
+EOF
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
