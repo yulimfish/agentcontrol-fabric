@@ -41,6 +41,8 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -51,6 +53,7 @@ public class AgentControlClientMod implements ClientModInitializer {
     private ServerSocket serverSocket;
     private AgentControlCache cache;
     private Identifier currentDimension;
+    private final Set<Integer> programmaticKeys = new HashSet<>();
 
     public static AgentControlConfig config() {
         if (config == null) config = AgentControlConfig.load();
@@ -87,6 +90,21 @@ public class AgentControlClientMod implements ClientModInitializer {
 
     private void onTick(MinecraftClient client) {
         if (client.player == null || client.world == null) return;
+
+        // When MouseReleaseScreen is open, manually update keybinding states from GLFW
+        // so movement works while a screen is active.
+        // Skip keys that are being held programmatically via HTTP action.
+        if (client.currentScreen instanceof MouseReleaseScreen) {
+            long window = client.getWindow().getHandle();
+            for (KeyBinding kb : client.options.allKeys) {
+                if (kb != null) {
+                    int code = kb.getDefaultKey().getCode();
+                    if (!programmaticKeys.contains(code)) {
+                        kb.setPressed(org.lwjgl.glfw.GLFW.glfwGetKey(window, code) == org.lwjgl.glfw.GLFW.GLFW_PRESS);
+                    }
+                }
+            }
+        }
 
         Identifier dimension = client.world.getRegistryKey().getValue();
         if (currentDimension == null || !currentDimension.equals(dimension)) {
@@ -202,17 +220,49 @@ public class AgentControlClientMod implements ClientModInitializer {
                 int durationMs = clampInt(params.get("durationMs"), 50, 10_000, 1_000);
                 KeyBinding key = movementKey(client, direction);
                 if (key == null) return "{\"ok\":false,\"error\":\"bad_direction\"}";
+                int keyCode = key.getDefaultKey().getCode();
+                programmaticKeys.add(keyCode);
                 key.setPressed(true);
                 Thread release = new Thread(() -> {
                     try {
                         Thread.sleep(durationMs);
                     } catch (InterruptedException ignored) {
                     }
-                    client.execute(() -> key.setPressed(false));
+                    client.execute(() -> {
+                        key.setPressed(false);
+                        programmaticKeys.remove(keyCode);
+                    });
                 }, "minecraft-mcp-release-" + direction);
                 release.setDaemon(true);
                 release.start();
                 return "{\"ok\":true,\"action\":\"move\",\"direction\":\"" + json(direction) + "\",\"durationMs\":" + durationMs + "}";
+            }
+            case "move_multi" -> {
+                String dirs = params.getOrDefault("directions", "forward");
+                int durationMs = clampInt(params.get("durationMs"), 50, 10_000, 1_000);
+                String[] parts = dirs.split(",");
+                List<KeyBinding> keys = new ArrayList<>();
+                List<Integer> codes = new ArrayList<>();
+                for (String part : parts) {
+                    KeyBinding key = movementKey(client, part.trim());
+                    if (key != null) {
+                        keys.add(key);
+                        codes.add(key.getDefaultKey().getCode());
+                    }
+                }
+                if (keys.isEmpty()) return "{\"ok\":false,\"error\":\"bad_direction\"}";
+                for (int code : codes) programmaticKeys.add(code);
+                for (KeyBinding key : keys) key.setPressed(true);
+                Thread release = new Thread(() -> {
+                    try { Thread.sleep(durationMs); } catch (InterruptedException ignored) {}
+                    client.execute(() -> {
+                        for (KeyBinding key : keys) key.setPressed(false);
+                        for (int code : codes) programmaticKeys.remove(code);
+                    });
+                }, "minecraft-mcp-release-multi");
+                release.setDaemon(true);
+                release.start();
+                return "{\"ok\":true,\"action\":\"move_multi\",\"directions\":\"" + json(dirs) + "\",\"durationMs\":" + durationMs + "}";
             }
             case "look" -> {
                 float yaw = clampFloat(params.get("yaw"), -180.0f, 180.0f, client.player.getYaw());
@@ -320,6 +370,107 @@ public class AgentControlClientMod implements ClientModInitializer {
                 release.setDaemon(true);
                 release.start();
                 return "{\"ok\":true,\"action\":\"swap_hands\"}";
+            }
+            case "break_block" -> {
+                double bx = Double.parseDouble(params.getOrDefault("x", "0"));
+                double by = Double.parseDouble(params.getOrDefault("y", "0"));
+                double bz = Double.parseDouble(params.getOrDefault("z", "0"));
+                // 对准方块中心
+                double targetX = bx + 0.5;
+                double targetY = by + 0.5;
+                double targetZ = bz + 0.5;
+                double eyeY = client.player.getEyePos().getY();
+                double dx = targetX - client.player.getX();
+                double dy = targetY - eyeY;
+                double dz = targetZ - client.player.getZ();
+                double horizontalDist = Math.sqrt(dx * dx + dz * dz);
+                float yaw = (float) (-Math.atan2(dx, dz) * 180.0 / Math.PI);
+                float pitch = (float) (-Math.atan2(dy, horizontalDist) * 180.0 / Math.PI);
+                client.player.setYaw(yaw);
+                client.player.setPitch(pitch);
+                // 使用 attackBlock 直接攻击指定坐标的方块
+                BlockPos blockPos = new BlockPos((int) bx, (int) by, (int) bz);
+                if (client.interactionManager != null) {
+                    // 获取方块面——从玩家方向看向方块
+                    Direction side = getFacingDirection(dx, dy, dz);
+                    boolean ok = client.interactionManager.attackBlock(blockPos, side);
+                    client.player.swingHand(Hand.MAIN_HAND);
+                    return "{\"ok\":" + ok + ",\"action\":\"break_block\",\"x\":" + bx + ",\"y\":" + by + ",\"z\":" + bz + "}";
+                }
+                return "{\"ok\":false,\"error\":\"no_interaction_manager\"}";
+            }
+            case "move_to" -> {
+                double tx = Double.parseDouble(params.getOrDefault("x", String.valueOf(client.player.getX())));
+                double tz = Double.parseDouble(params.getOrDefault("z", String.valueOf(client.player.getZ())));
+                double curX = client.player.getX();
+                double curZ = client.player.getZ();
+                double distX = tx - curX;
+                double distZ = tz - curZ;
+                double horizontalDist = Math.sqrt(distX * distX + distZ * distZ);
+                if (horizontalDist < 0.5) {
+                    return "{\"ok\":true,\"action\":\"move_to\",\"message\":\"already_at_target\",\"distance\":0}";
+                }
+                // 面朝目标方向
+                float yaw = (float) (-Math.atan2(distX, distZ) * 180.0 / Math.PI);
+                client.player.setYaw(yaw);
+                client.player.setPitch(0.0f);
+                // 估算移动时间：约 4.3 格/秒（正常行走速度）
+                int durationMs = (int) Math.max(100, Math.min(10_000, (horizontalDist / 4.3) * 1000));
+                // 检查前方是否有需要跳跃的方块（脚部高度有方块阻挡）
+                boolean needJump = false;
+                BlockPos playerPos = client.player.getBlockPos();
+                // 检查前方 1-2 格是否有 1 格高的障碍
+                for (int dist = 1; dist <= 2; dist++) {
+                    int checkX = (int) (curX + Math.round(distX / horizontalDist * dist));
+                    int checkZ = (int) (curZ + Math.round(distZ / horizontalDist * dist));
+                    BlockPos checkPos = new BlockPos(checkX, playerPos.getY(), checkZ);
+                    BlockPos checkPosAbove = new BlockPos(checkX, playerPos.getY() + 1, checkZ);
+                    BlockState footBlock = client.world.getBlockState(checkPos);
+                    BlockState headBlock = client.world.getBlockState(checkPosAbove);
+                    if (!footBlock.isAir() && headBlock.isAir()) {
+                        needJump = true;
+                        break;
+                    }
+                }
+                if (needJump) {
+                    // 跳跃 + 前进
+                    KeyBinding jumpKey = client.options.jumpKey;
+                    KeyBinding forwardKey = client.options.forwardKey;
+                    int jumpCode = jumpKey.getDefaultKey().getCode();
+                    int forwardCode = forwardKey.getDefaultKey().getCode();
+                    programmaticKeys.add(jumpCode);
+                    programmaticKeys.add(forwardCode);
+                    jumpKey.setPressed(true);
+                    forwardKey.setPressed(true);
+                    Thread release = new Thread(() -> {
+                        try { Thread.sleep(durationMs); } catch (InterruptedException ignored) {}
+                        client.execute(() -> {
+                            jumpKey.setPressed(false);
+                            forwardKey.setPressed(false);
+                            programmaticKeys.remove(jumpCode);
+                            programmaticKeys.remove(forwardCode);
+                        });
+                    }, "minecraft-mcp-release-move-to");
+                    release.setDaemon(true);
+                    release.start();
+                } else {
+                    // 普通前进
+                    KeyBinding forwardKey = client.options.forwardKey;
+                    int forwardCode = forwardKey.getDefaultKey().getCode();
+                    programmaticKeys.add(forwardCode);
+                    forwardKey.setPressed(true);
+                    Thread release = new Thread(() -> {
+                        try { Thread.sleep(durationMs); } catch (InterruptedException ignored) {}
+                        client.execute(() -> {
+                            forwardKey.setPressed(false);
+                            programmaticKeys.remove(forwardCode);
+                        });
+                    }, "minecraft-mcp-release-move-to");
+                    release.setDaemon(true);
+                    release.start();
+                }
+                String jumpStr = needJump ? "jump," : "";
+                return "{\"ok\":true,\"action\":\"move_to\",\"targetX\":" + tx + ",\"targetZ\":" + tz + ",\"distance\":" + round(horizontalDist) + ",\"durationMs\":" + durationMs + ",\"jumped\":" + needJump + "}";
             }
             case "close_screen" -> {
                 Screen current = client.currentScreen;
@@ -445,6 +596,19 @@ public class AgentControlClientMod implements ClientModInitializer {
                 + "\"rawLight\":" + rawLight
                 + "}"
                 + "}";
+    }
+
+    private Direction getFacingDirection(double dx, double dy, double dz) {
+        double absDx = Math.abs(dx);
+        double absDy = Math.abs(dy);
+        double absDz = Math.abs(dz);
+        if (absDy > absDx && absDy > absDz) {
+            return dy > 0 ? Direction.UP : Direction.DOWN;
+        }
+        if (absDx > absDz) {
+            return dx > 0 ? Direction.EAST : Direction.WEST;
+        }
+        return dz > 0 ? Direction.SOUTH : Direction.NORTH;
     }
 
     private String facingDirection(float yaw) {
@@ -670,6 +834,30 @@ public class AgentControlClientMod implements ClientModInitializer {
 
         @Override
         public boolean shouldPause() {
+            return false;
+        }
+
+        @Override
+        public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+            if (keyCode == 256) { // GLFW_KEY_ESCAPE
+                return super.keyPressed(keyCode, scanCode, modifiers);
+            }
+            // Manually update keybinding states so movement works while screen is open
+            for (KeyBinding kb : client.options.allKeys) {
+                if (kb != null && kb.getDefaultKey().getCode() == keyCode) {
+                    kb.setPressed(true);
+                }
+            }
+            return false;
+        }
+
+        @Override
+        public boolean keyReleased(int keyCode, int scanCode, int modifiers) {
+            for (KeyBinding kb : client.options.allKeys) {
+                if (kb != null && kb.getDefaultKey().getCode() == keyCode) {
+                    kb.setPressed(false);
+                }
+            }
             return false;
         }
 
