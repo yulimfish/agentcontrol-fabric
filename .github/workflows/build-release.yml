@@ -1,0 +1,116 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'gradle.properties'
+      - 'build.gradle'
+      - 'settings.gradle'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build with Gradle
+        run: ./gradlew clean build
+
+      - name: Get version info
+        id: version
+        run: |
+          MOD_VERSION=$(grep '^mod_version=' gradle.properties | cut -d'=' -f2)
+          BUILD_TIME=$(date +'%Y-%m-%d %H:%M:%S')
+          BUILD_TIME_SHORT=$(date +'%Y%m%d-%H%M%S')
+          BUILD_DATE=$(date +'%Y-%m-%d')
+          TAG_NAME="v${MOD_VERSION}-${BUILD_TIME_SHORT}"
+          RELEASE_NAME="AgentControl Fabric v${MOD_VERSION} (${BUILD_TIME})"
+          
+          echo "mod_version=${MOD_VERSION}" >> $GITHUB_OUTPUT
+          echo "build_time=${BUILD_TIME}" >> $GITHUB_OUTPUT
+          echo "build_date=${BUILD_DATE}" >> $GITHUB_OUTPUT
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "release_name=${RELEASE_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          # 获取最近的提交信息（最多 20 条）
+          COMMITS=$(git log -20 --pretty=format:"- %s")
+          
+          # 尝试读取 CHANGELOG.md 或 docs/guide/changelog.md
+          CHANGELOG=""
+          if [ -f "docs/guide/changelog.md" ]; then
+            # 提取最新版本的内容（从第一个 ## 到下一个 ## 之前）
+            CHANGELOG=$(awk '/^## /{found++} found==1{print} found==2{exit}' docs/guide/changelog.md | sed '1d')
+          fi
+          
+          # 构建 release notes
+          NOTES="## 编译信息
+
+- **版本**: ${{ steps.version.outputs.mod_version }}
+- **编译时间**: ${{ steps.version.outputs.build_time }}
+- **Minecraft 版本**: 1.21.1
+
+"
+          
+          if [ -n "$CHANGELOG" ]; then
+            NOTES="${NOTES}## 更新内容
+
+${CHANGELOG}
+
+"
+          fi
+          
+          NOTES="${NOTES}## 近期提交
+
+${COMMITS}
+
+"
+          
+          NOTES="${NOTES}---
+
+## 安装说明
+
+1. 将 `agentcontrol-fabric-*.jar` 放入 Minecraft 的 `mods` 文件夹
+2. 要求: Minecraft 1.21.1 + Fabric Loader >= 0.16.0
+3. 不要安装 `*-sources.jar`（源码包，不会生效）
+
+## 相关链接
+
+- [总仓](https://github.com/yulimfish/agentcontrol)
+- [MCP 服务](https://github.com/yulimfish/agentcontrol-mcp)
+- [文档](https://yulimfish.github.io/agentcontrol-docs/)
+"
+          
+          # 保存到文件，避免多行字符串问题
+          echo "${NOTES}" > release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag_name }}
+          name: ${{ steps.version.outputs.release_name }}
+          body_path: release_notes.md
+          files: |
+            build/libs/agentcontrol-fabric-*.jar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
