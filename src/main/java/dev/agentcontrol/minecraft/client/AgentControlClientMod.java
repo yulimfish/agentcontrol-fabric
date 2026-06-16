@@ -9,6 +9,7 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
@@ -21,6 +22,8 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.text.Text;
+import net.minecraft.world.LightType;
+import net.minecraft.world.biome.Biome;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -123,8 +126,9 @@ public class AgentControlClientMod implements ClientModInitializer {
         }
 
         MinecraftClient client = MinecraftClient.getInstance();
+        Map<String, String> params = query(query);
         CompletableFuture<String> future = new CompletableFuture<>();
-        client.execute(() -> future.complete(snapshot(client)));
+        client.execute(() -> future.complete(snapshot(client, params)));
 
         try {
             send(socket, 200, future.get(2, TimeUnit.SECONDS));
@@ -219,6 +223,28 @@ public class AgentControlClientMod implements ClientModInitializer {
                 client.player.swingHand(Hand.MAIN_HAND);
                 return "{\"ok\":true,\"action\":\"place_crosshair\"}";
             }
+            case "select_slot" -> {
+                int slot = clampInt(params.get("slot"), 0, 8, 0);
+                client.player.getInventory().selectedSlot = slot;
+                return "{\"ok\":true,\"action\":\"select_slot\",\"slot\":" + slot + "}";
+            }
+            case "drop" -> {
+                boolean stack = "true".equalsIgnoreCase(params.getOrDefault("stack", "false"));
+                if (client.player != null) {
+                    client.player.dropSelectedItem(stack);
+                }
+                return "{\"ok\":true,\"action\":\"drop\",\"stack\":" + stack + "}";
+            }
+            case "swap_hands" -> {
+                client.options.swapHandsKey.setPressed(true);
+                Thread release = new Thread(() -> {
+                    try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+                    client.execute(() -> client.options.swapHandsKey.setPressed(false));
+                }, "minecraft-mcp-swap-hands");
+                release.setDaemon(true);
+                release.start();
+                return "{\"ok\":true,\"action\":\"swap_hands\"}";
+            }
             case "close_screen" -> {
                 client.setScreen(null);
                 return "{\"ok\":true,\"action\":\"close_screen\"}";
@@ -234,7 +260,7 @@ public class AgentControlClientMod implements ClientModInitializer {
         }
     }
 
-    private String snapshot(MinecraftClient client) {
+    private String snapshot(MinecraftClient client, Map<String, String> params) {
         String screen = client.currentScreen == null ? null : client.currentScreen.getClass().getName();
         if (client.player == null || client.world == null) {
             return "{"
@@ -244,6 +270,8 @@ public class AgentControlClientMod implements ClientModInitializer {
         }
 
         BlockPos pos = client.player.getBlockPos();
+        int scanRadius = clampInt(params.get("scanRadius"), 1, 16, 4);
+
         StringBuilder builder = new StringBuilder();
         builder.append('{');
         builder.append("\"inGame\":true,");
@@ -259,13 +287,21 @@ public class AgentControlClientMod implements ClientModInitializer {
         builder.append("\"rotation\":{");
         builder.append("\"yaw\":").append(round(client.player.getYaw())).append(',');
         builder.append("\"pitch\":").append(round(client.player.getPitch())).append("},");
+        builder.append("\"facing\":\"").append(json(facingDirection(client.player.getYaw()))).append("\",");
+        builder.append("\"onGround\":").append(client.player.isOnGround()).append(',');
         builder.append("\"health\":{");
         builder.append("\"health\":").append(round(client.player.getHealth())).append(',');
         builder.append("\"maxHealth\":").append(round(client.player.getMaxHealth())).append(',');
-        builder.append("\"food\":").append(client.player.getHungerManager().getFoodLevel()).append("},");
+        builder.append("\"food\":").append(client.player.getHungerManager().getFoodLevel()).append(',');
+        builder.append("\"oxygen\":").append(client.player.getAir()).append("},");
+        builder.append("\"experience\":{");
+        builder.append("\"level\":").append(client.player.experienceLevel).append(',');
+        builder.append("\"progress\":").append(round(client.player.experienceProgress)).append("},");
         builder.append("\"inventory\":").append(inventory(client.player.getInventory())).append(',');
+        builder.append("\"equipment\":").append(equipment(client.player)).append(',');
+        builder.append("\"environment\":").append(environment(client)).append(',');
         builder.append("\"crosshairTarget\":").append(crosshairTarget(client)).append(',');
-        builder.append("\"nearbyBlocks\":").append(nearbyBlocks(client, 4)).append(',');
+        builder.append("\"nearbyBlocks\":").append(nearbyBlocks(client, scanRadius)).append(',');
         builder.append("\"nearbyEntities\":").append(nearbyEntities(client, 16.0));
         builder.append('}');
         return builder.toString();
@@ -283,35 +319,100 @@ public class AgentControlClientMod implements ClientModInitializer {
     private String item(int slot, ItemStack stack) {
         return "{"
                 + "\"slot\":" + slot + ","
-                + "\"id\":\"" + json(Registries.ITEM.getId(stack.getItem()).toString()) + "\"," 
-                + "\"name\":\"" + json(stack.getName().getString()) + "\"," 
+                + "\"id\":\"" + json(Registries.ITEM.getId(stack.getItem()).toString()) + "\","
+                + "\"name\":\"" + json(stack.getName().getString()) + "\","
                 + "\"count\":" + stack.getCount()
+                + (stack.isDamageable() ? ",\"damage\":" + stack.getDamage() + ",\"maxDamage\":" + stack.getMaxDamage() : "")
                 + "}";
+    }
+
+    private String equipment(net.minecraft.client.network.ClientPlayerEntity player) {
+        ItemStack head = player.getInventory().getArmorStack(0);
+        ItemStack chest = player.getInventory().getArmorStack(1);
+        ItemStack legs = player.getInventory().getArmorStack(2);
+        ItemStack feet = player.getInventory().getArmorStack(3);
+        ItemStack offHand = player.getInventory().offHand.get(0);
+        return "{"
+                + "\"head\":" + (head.isEmpty() ? "null" : item(-1, head)) + ","
+                + "\"chest\":" + (chest.isEmpty() ? "null" : item(-1, chest)) + ","
+                + "\"legs\":" + (legs.isEmpty() ? "null" : item(-1, legs)) + ","
+                + "\"feet\":" + (feet.isEmpty() ? "null" : item(-1, feet)) + ","
+                + "\"offHand\":" + (offHand.isEmpty() ? "null" : item(-1, offHand))
+                + "}";
+    }
+
+    private String environment(MinecraftClient client) {
+        BlockPos pos = client.player.getBlockPos();
+        Biome biome = client.world.getBiome(pos).value();
+        String biomeId = client.world.getBiome(pos).getKey().map(key -> key.getValue().toString()).orElse("unknown");
+        int blockLight = client.world.getLightLevel(LightType.BLOCK, pos);
+        int skyLight = client.world.getLightLevel(LightType.SKY, pos);
+        int rawLight = client.world.getLightLevel(pos);
+        long timeOfDay = client.world.getTimeOfDay() % 24000;
+
+        return "{"
+                + "\"biome\":\"" + json(biomeId) + "\","
+                + "\"timeOfDay\":" + timeOfDay + ","
+                + "\"weather\":{"
+                + "\"raining\":" + client.world.isRaining() + ","
+                + "\"thundering\":" + client.world.isThundering()
+                + "},"
+                + "\"lightLevel\":{"
+                + "\"blockLight\":" + blockLight + ","
+                + "\"skyLight\":" + skyLight + ","
+                + "\"rawLight\":" + rawLight
+                + "}"
+                + "}";
+    }
+
+    private String facingDirection(float yaw) {
+        float normalized = ((yaw % 360) + 360) % 360;
+        if (normalized >= 315 || normalized < 45) return "South";
+        if (normalized >= 45 && normalized < 135) return "West";
+        if (normalized >= 135 && normalized < 225) return "North";
+        return "East";
     }
 
     private String crosshairTarget(MinecraftClient client) {
         HitResult target = client.crosshairTarget;
         if (target == null || target.getType() == HitResult.Type.MISS) return "null";
 
+        Vec3d playerPos = client.player.getPos();
+        double distance = target.getPos().distanceTo(playerPos);
+
         if (target instanceof BlockHitResult blockHit) {
             BlockPos pos = blockHit.getBlockPos();
             BlockState state = client.world.getBlockState(pos);
             return "{"
-                    + "\"type\":\"block\"," 
-                    + "\"block\":\"" + json(Registries.BLOCK.getId(state.getBlock()).toString()) + "\"," 
-                    + "\"side\":\"" + json(blockHit.getSide().asString()) + "\"," 
+                    + "\"type\":\"block\","
+                    + "\"block\":\"" + json(Registries.BLOCK.getId(state.getBlock()).toString()) + "\","
+                    + "\"side\":\"" + json(blockHit.getSide().asString()) + "\","
                     + "\"x\":" + pos.getX() + ","
                     + "\"y\":" + pos.getY() + ","
-                    + "\"z\":" + pos.getZ()
+                    + "\"z\":" + pos.getZ() + ","
+                    + "\"distance\":" + round(distance) + ","
+                    + "\"solid\":" + state.isSolidBlock(client.world, pos)
                     + "}";
         }
 
         if (target instanceof EntityHitResult entityHit) {
             Entity entity = entityHit.getEntity();
+            double health = entity instanceof LivingEntity living ? living.getHealth() : -1.0;
+            double maxHealth = entity instanceof LivingEntity living ? living.getMaxHealth() : -1.0;
+            List<String> effects = new ArrayList<>();
+            if (entity instanceof LivingEntity living) {
+                for (StatusEffectInstance effect : living.getStatusEffects()) {
+                    effects.add("\"" + json(Registries.STATUS_EFFECT.getId(effect.getEffectType().value()).toString()) + "\"");
+                }
+            }
             return "{"
-                    + "\"type\":\"entity\"," 
-                    + "\"entity\":\"" + json(Registries.ENTITY_TYPE.getId(entity.getType()).toString()) + "\"," 
-                    + "\"name\":\"" + json(entity.getName().getString()) + "\""
+                    + "\"type\":\"entity\","
+                    + "\"entity\":\"" + json(Registries.ENTITY_TYPE.getId(entity.getType()).toString()) + "\","
+                    + "\"name\":\"" + json(entity.getName().getString()) + "\","
+                    + "\"health\":" + round(health) + ","
+                    + "\"maxHealth\":" + round(maxHealth) + ","
+                    + "\"distance\":" + round(distance) + ","
+                    + "\"effects\":[" + String.join(",", effects) + "]"
                     + "}";
         }
 
@@ -321,7 +422,7 @@ public class AgentControlClientMod implements ClientModInitializer {
     private String nearbyBlocks(MinecraftClient client, int radius) {
         List<String> blocks = new ArrayList<>();
         BlockPos center = client.player.getBlockPos();
-        for (int y = -2; y <= 2; y++) {
+        for (int y = -radius; y <= radius; y++) {
             for (int x = -radius; x <= radius; x++) {
                 for (int z = -radius; z <= radius; z++) {
                     BlockPos pos = center.add(x, y, z);
@@ -331,7 +432,7 @@ public class AgentControlClientMod implements ClientModInitializer {
                             + "\"x\":" + pos.getX() + ","
                             + "\"y\":" + pos.getY() + ","
                             + "\"z\":" + pos.getZ() + ","
-                            + "\"id\":\"" + json(Registries.BLOCK.getId(state.getBlock()).toString()) + "\"," 
+                            + "\"id\":\"" + json(Registries.BLOCK.getId(state.getBlock()).toString()) + "\","
                             + "\"solid\":" + state.isSolidBlock(client.world, pos)
                             + "}");
                 }
@@ -347,15 +448,24 @@ public class AgentControlClientMod implements ClientModInitializer {
         for (Entity entity : client.world.getOtherEntities(client.player, box)) {
             Vec3d entityPos = entity.getPos();
             double health = entity instanceof LivingEntity living ? living.getHealth() : -1.0;
+            double maxHealth = entity instanceof LivingEntity living ? living.getMaxHealth() : -1.0;
+            List<String> effects = new ArrayList<>();
+            if (entity instanceof LivingEntity living) {
+                for (StatusEffectInstance effect : living.getStatusEffects()) {
+                    effects.add("\"" + json(Registries.STATUS_EFFECT.getId(effect.getEffectType().value()).toString()) + "\"");
+                }
+            }
             entities.add("{"
                     + "\"id\":" + entity.getId() + ","
-                    + "\"type\":\"" + json(Registries.ENTITY_TYPE.getId(entity.getType()).toString()) + "\"," 
-                    + "\"name\":\"" + json(entity.getName().getString()) + "\"," 
+                    + "\"type\":\"" + json(Registries.ENTITY_TYPE.getId(entity.getType()).toString()) + "\","
+                    + "\"name\":\"" + json(entity.getName().getString()) + "\","
                     + "\"x\":" + round(entityPos.x) + ","
                     + "\"y\":" + round(entityPos.y) + ","
                     + "\"z\":" + round(entityPos.z) + ","
                     + "\"distance\":" + round(entity.distanceTo(client.player)) + ","
-                    + "\"health\":" + round(health)
+                    + "\"health\":" + round(health) + ","
+                    + "\"maxHealth\":" + round(maxHealth) + ","
+                    + "\"effects\":[" + String.join(",", effects) + "]"
                     + "}");
         }
         return "[" + String.join(",", entities) + "]";
