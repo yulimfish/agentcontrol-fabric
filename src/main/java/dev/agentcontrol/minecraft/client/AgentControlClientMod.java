@@ -414,63 +414,63 @@ public class AgentControlClientMod implements ClientModInitializer {
                 float yaw = (float) (-Math.atan2(distX, distZ) * 180.0 / Math.PI);
                 client.player.setYaw(yaw);
                 client.player.setPitch(0.0f);
-                // 估算移动时间：约 4.3 格/秒（正常行走速度）
-                int durationMs = (int) Math.max(100, Math.min(10_000, (horizontalDist / 4.3) * 1000));
-                // 检查前方是否有需要跳跃的方块（脚部高度有方块阻挡）
-                boolean needJump = false;
-                BlockPos playerPos = client.player.getBlockPos();
-                // 检查前方 1-2 格是否有 1 格高的障碍
-                for (int dist = 1; dist <= 2; dist++) {
-                    int checkX = (int) (curX + Math.round(distX / horizontalDist * dist));
-                    int checkZ = (int) (curZ + Math.round(distZ / horizontalDist * dist));
-                    BlockPos checkPos = new BlockPos(checkX, playerPos.getY(), checkZ);
-                    BlockPos checkPosAbove = new BlockPos(checkX, playerPos.getY() + 1, checkZ);
-                    BlockState footBlock = client.world.getBlockState(checkPos);
-                    BlockState headBlock = client.world.getBlockState(checkPosAbove);
-                    if (!footBlock.isAir() && headBlock.isAir()) {
-                        needJump = true;
-                        break;
+
+                boolean inWater = client.player.isTouchingWater();
+                int durationMs;
+                List<KeyBinding> keys = new ArrayList<>();
+                List<Integer> codes = new ArrayList<>();
+
+                if (inWater) {
+                    // 水中：游泳速度约 2 格/秒，前进+跳跃（上浮）同时按
+                    durationMs = (int) Math.max(100, Math.min(10_000, (horizontalDist / 2.0) * 1000));
+                    KeyBinding forwardKey = client.options.forwardKey;
+                    KeyBinding jumpKey = client.options.jumpKey;
+                    keys.add(forwardKey);
+                    keys.add(jumpKey);
+                    codes.add(forwardKey.getDefaultKey().getCode());
+                    codes.add(jumpKey.getDefaultKey().getCode());
+                } else {
+                    // 陆地：行走速度约 4.3 格/秒
+                    durationMs = (int) Math.max(100, Math.min(10_000, (horizontalDist / 4.3) * 1000));
+                    // 检查前方是否有需要跳跃的方块（脚部高度有方块阻挡）
+                    boolean needJump = false;
+                    BlockPos playerPos = client.player.getBlockPos();
+                    for (int dist = 1; dist <= 2; dist++) {
+                        int checkX = (int) (curX + Math.round(distX / horizontalDist * dist));
+                        int checkZ = (int) (curZ + Math.round(distZ / horizontalDist * dist));
+                        BlockPos checkPos = new BlockPos(checkX, playerPos.getY(), checkZ);
+                        BlockPos checkPosAbove = new BlockPos(checkX, playerPos.getY() + 1, checkZ);
+                        BlockState footBlock = client.world.getBlockState(checkPos);
+                        BlockState headBlock = client.world.getBlockState(checkPosAbove);
+                        if (!footBlock.isAir() && headBlock.isAir()) {
+                            needJump = true;
+                            break;
+                        }
+                    }
+                    KeyBinding forwardKey = client.options.forwardKey;
+                    keys.add(forwardKey);
+                    codes.add(forwardKey.getDefaultKey().getCode());
+                    if (needJump) {
+                        KeyBinding jumpKey = client.options.jumpKey;
+                        keys.add(jumpKey);
+                        codes.add(jumpKey.getDefaultKey().getCode());
                     }
                 }
-                if (needJump) {
-                    // 跳跃 + 前进
-                    KeyBinding jumpKey = client.options.jumpKey;
-                    KeyBinding forwardKey = client.options.forwardKey;
-                    int jumpCode = jumpKey.getDefaultKey().getCode();
-                    int forwardCode = forwardKey.getDefaultKey().getCode();
-                    programmaticKeys.add(jumpCode);
-                    programmaticKeys.add(forwardCode);
-                    jumpKey.setPressed(true);
-                    forwardKey.setPressed(true);
-                    Thread release = new Thread(() -> {
-                        try { Thread.sleep(durationMs); } catch (InterruptedException ignored) {}
-                        client.execute(() -> {
-                            jumpKey.setPressed(false);
-                            forwardKey.setPressed(false);
-                            programmaticKeys.remove(jumpCode);
-                            programmaticKeys.remove(forwardCode);
-                        });
-                    }, "minecraft-mcp-release-move-to");
-                    release.setDaemon(true);
-                    release.start();
-                } else {
-                    // 普通前进
-                    KeyBinding forwardKey = client.options.forwardKey;
-                    int forwardCode = forwardKey.getDefaultKey().getCode();
-                    programmaticKeys.add(forwardCode);
-                    forwardKey.setPressed(true);
-                    Thread release = new Thread(() -> {
-                        try { Thread.sleep(durationMs); } catch (InterruptedException ignored) {}
-                        client.execute(() -> {
-                            forwardKey.setPressed(false);
-                            programmaticKeys.remove(forwardCode);
-                        });
-                    }, "minecraft-mcp-release-move-to");
-                    release.setDaemon(true);
-                    release.start();
-                }
-                String jumpStr = needJump ? "jump," : "";
-                return "{\"ok\":true,\"action\":\"move_to\",\"targetX\":" + tx + ",\"targetZ\":" + tz + ",\"distance\":" + round(horizontalDist) + ",\"durationMs\":" + durationMs + ",\"jumped\":" + needJump + "}";
+
+                for (int code : codes) programmaticKeys.add(code);
+                for (KeyBinding key : keys) key.setPressed(true);
+                Thread release = new Thread(() -> {
+                    try { Thread.sleep(durationMs); } catch (InterruptedException ignored) {}
+                    client.execute(() -> {
+                        for (KeyBinding key : keys) key.setPressed(false);
+                        for (int code : codes) programmaticKeys.remove(code);
+                    });
+                }, "minecraft-mcp-release-move-to");
+                release.setDaemon(true);
+                release.start();
+
+                String mode = inWater ? "swim" : "walk";
+                return "{\"ok\":true,\"action\":\"move_to\",\"targetX\":" + tx + ",\"targetZ\":" + tz + ",\"distance\":" + round(horizontalDist) + ",\"durationMs\":" + durationMs + ",\"mode\":\"" + mode + "\"}";
             }
             case "close_screen" -> {
                 Screen current = client.currentScreen;
