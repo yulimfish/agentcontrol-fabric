@@ -35,7 +35,9 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import net.minecraft.state.property.Property;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -223,8 +225,13 @@ public class AgentControlClientMod implements ClientModInitializer {
                 double x = Double.parseDouble(params.getOrDefault("x", String.valueOf(client.player.getX())));
                 double y = Double.parseDouble(params.getOrDefault("y", String.valueOf(client.player.getY())));
                 double z = Double.parseDouble(params.getOrDefault("z", String.valueOf(client.player.getZ())));
+                // 对准方块中心：如果传入的是整数方块坐标，自动加 0.5
+                if (x == Math.floor(x)) x += 0.5;
+                if (y == Math.floor(y)) y += 0.5;
+                if (z == Math.floor(z)) z += 0.5;
+                double eyeY = client.player.getEyePos().getY();
                 double dx = x - client.player.getX();
-                double dy = y - client.player.getY();
+                double dy = y - eyeY;
                 double dz = z - client.player.getZ();
                 double distance = Math.sqrt(dx * dx + dz * dz);
                 float yaw = (float) (-Math.atan2(dx, dz) * 180.0 / Math.PI);
@@ -344,6 +351,7 @@ public class AgentControlClientMod implements ClientModInitializer {
 
         BlockPos pos = client.player.getBlockPos();
         int scanRadius = clampInt(params.get("scanRadius"), 1, 16, 4);
+        String filter = params.get("filter");
 
         StringBuilder builder = new StringBuilder();
         builder.append('{');
@@ -374,7 +382,7 @@ public class AgentControlClientMod implements ClientModInitializer {
         builder.append("\"equipment\":").append(equipment(client.player)).append(',');
         builder.append("\"environment\":").append(environment(client)).append(',');
         builder.append("\"crosshairTarget\":").append(crosshairTarget(client)).append(',');
-        builder.append("\"nearbyBlocks\":").append(nearbyBlocks(client, scanRadius)).append(',');
+        builder.append("\"nearbyBlocks\":").append(nearbyBlocks(client, scanRadius, filter)).append(',');
         builder.append("\"nearbyEntities\":").append(nearbyEntities(client, 16.0)).append(',');
         builder.append("\"cache\":").append(cacheInfo());
         builder.append('}');
@@ -457,7 +465,8 @@ public class AgentControlClientMod implements ClientModInitializer {
         if (target instanceof BlockHitResult blockHit) {
             BlockPos pos = blockHit.getBlockPos();
             BlockState state = client.world.getBlockState(pos);
-            return "{"
+            StringBuilder sb = new StringBuilder();
+            sb.append("{"
                     + "\"type\":\"block\","
                     + "\"block\":\"" + json(Registries.BLOCK.getId(state.getBlock()).toString()) + "\","
                     + "\"side\":\"" + json(blockHit.getSide().asString()) + "\","
@@ -465,8 +474,21 @@ public class AgentControlClientMod implements ClientModInitializer {
                     + "\"y\":" + pos.getY() + ","
                     + "\"z\":" + pos.getZ() + ","
                     + "\"distance\":" + round(distance) + ","
-                    + "\"solid\":" + state.isSolidBlock(client.world, pos)
-                    + "}";
+                    + "\"solid\":" + state.isSolidBlock(client.world, pos));
+            // 添加方块属性（如颜色、朝向等）
+            Collection<Property<?>> properties = state.getProperties();
+            if (!properties.isEmpty()) {
+                sb.append(",\"properties\":{");
+                boolean first = true;
+                for (Property<?> prop : properties) {
+                    if (!first) sb.append(",");
+                    first = false;
+                    sb.append("\"" + json(prop.getName()) + "\":\"" + json(state.get(prop).toString()) + "\"");
+                }
+                sb.append("}");
+            }
+            sb.append("}");
+            return sb.toString();
         }
 
         if (target instanceof EntityHitResult entityHit) {
@@ -493,20 +515,23 @@ public class AgentControlClientMod implements ClientModInitializer {
         return "null";
     }
 
-    private String nearbyBlocks(MinecraftClient client, int radius) {
+    private String nearbyBlocks(MinecraftClient client, int radius, String filter) {
         List<String> blocks = new ArrayList<>();
         BlockPos center = client.player.getBlockPos();
+        boolean hasFilter = filter != null && !filter.isEmpty();
         for (int y = -radius; y <= radius; y++) {
             for (int x = -radius; x <= radius; x++) {
                 for (int z = -radius; z <= radius; z++) {
                     BlockPos pos = center.add(x, y, z);
                     BlockState state = client.world.getBlockState(pos);
                     if (state.isAir()) continue;
+                    String blockId = Registries.BLOCK.getId(state.getBlock()).toString();
+                    if (hasFilter && !blockId.contains(filter)) continue;
                     blocks.add("{"
                             + "\"x\":" + pos.getX() + ","
                             + "\"y\":" + pos.getY() + ","
                             + "\"z\":" + pos.getZ() + ","
-                            + "\"id\":\"" + json(Registries.BLOCK.getId(state.getBlock()).toString()) + "\","
+                            + "\"id\":\"" + json(blockId) + "\","
                             + "\"solid\":" + state.isSolidBlock(client.world, pos)
                             + "}");
                 }

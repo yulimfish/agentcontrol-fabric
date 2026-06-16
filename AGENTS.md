@@ -23,8 +23,12 @@
 - 不要添加 RCON、命令方块或机器人账号控制路径。
 - 除非用户明确要求并经过审查，不要让端点监听非本地地址。
 
+#### 状态端点增强（新增 v0.1.3）
+- `crosshairTarget` 返回方块属性：当准星命中方块时，返回 `properties` 字段，包含方块状态属性（如 `color: purple`、`facing: east`）。这允许 AI 区分同一方块 ID 的不同变体（如彩色潜影盒）。
+- `nearbyBlocks` 支持 `filter` 参数：传入方块 ID 子串（如 `shulker_box`）可只返回匹配的方块，大幅减少响应数据量。
+
 #### 准星对准机制（新增 v0.1.1）
-- `look_at`：传入世界坐标，自动计算 yaw/pitch 对准目标
+- `look_at`：传入世界坐标，自动计算 yaw/pitch 对准目标。整数坐标自动加 0.5 对准方块中心。
 - `look_facing`：传入方向名（north/south/east/west/up/down），面朝指定方位
 
 ### 已修复的问题（v0.1.1）
