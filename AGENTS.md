@@ -27,6 +27,11 @@
 - `crosshairTarget` 返回方块属性：当准星命中方块时，返回 `properties` 字段，包含方块状态属性（如 `color: purple`、`facing: east`）。这允许 AI 区分同一方块 ID 的不同变体（如彩色潜影盒）。
 - `nearbyBlocks` 支持 `filter` 参数：传入方块 ID 子串（如 `shulker_box`）可只返回匹配的方块，大幅减少响应数据量。
 
+#### 水中生存改进（新增 v0.1.5）
+- `close_screen` 支持死亡界面：自动检测 DeathScreen，点击重生按钮。返回 `type: "respawn"` 表示已触发重生。
+- `respawn` action：独立的重生 action，专门处理死亡界面。
+- `move_to` 氧气监控：水中移动时自动检查氧气水平。如果氧气不足以到达目标（`oxygenSecs < estimatedSecs + 2` 且 `oxygen < 280`），切换为 `surface` 模式（只跳跃不上浮），返回 `reason: "oxygen_low"`。
+
 #### 准星对准机制（新增 v0.1.1）
 - `look_at`：传入世界坐标，自动计算 yaw/pitch 对准目标。整数坐标自动加 0.5 对准方块中心。
 - `look_facing`：传入方向名（north/south/east/west/up/down），面朝指定方位

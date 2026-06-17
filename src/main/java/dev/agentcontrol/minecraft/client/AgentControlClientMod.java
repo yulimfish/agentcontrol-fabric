@@ -421,8 +421,24 @@ public class AgentControlClientMod implements ClientModInitializer {
                 List<Integer> codes = new ArrayList<>();
 
                 if (inWater) {
-                    // 水中：游泳速度约 2 格/秒，前进+跳跃（上浮）同时按
-                    durationMs = (int) Math.max(100, Math.min(10_000, (horizontalDist / 2.0) * 1000));
+                    int oxygen = client.player.getAir();
+                    double swimSpeed = 2.0; // 格/秒
+                    double estimatedSecs = horizontalDist / swimSpeed;
+                    double oxygenSecs = oxygen / 20.0; // 每 tick 消耗 1 空气，20 tick/秒
+
+                    // 如果氧气不足以到达目标，优先上浮到水面呼吸
+                    if (oxygenSecs < estimatedSecs + 2.0 && oxygen < 280) {
+                        // 氧气不足：只向上浮（跳跃），不前进
+                        durationMs = 2000; // 浮 2 秒应该能到水面
+                        KeyBinding jumpKey = client.options.jumpKey;
+                        keys.add(jumpKey);
+                        codes.add(jumpKey.getDefaultKey().getCode());
+                        String mode = "surface";
+                        return "{\"ok\":true,\"action\":\"move_to\",\"targetX\":" + tx + ",\"targetZ\":" + tz + ",\"distance\":" + round(horizontalDist) + ",\"durationMs\":" + durationMs + ",\"mode\":\"" + mode + "\",\"oxygen\":" + oxygen + ",\"reason\":\"oxygen_low\"}";
+                    }
+
+                    // 氧气充足：游泳前进+上浮
+                    durationMs = (int) Math.max(100, Math.min(10_000, (horizontalDist / swimSpeed) * 1000));
                     KeyBinding forwardKey = client.options.forwardKey;
                     KeyBinding jumpKey = client.options.jumpKey;
                     keys.add(forwardKey);
@@ -475,10 +491,52 @@ public class AgentControlClientMod implements ClientModInitializer {
             case "close_screen" -> {
                 Screen current = client.currentScreen;
                 if (current != null) {
+                    // 死亡界面需要特殊处理：点击重生按钮
+                    String screenName = current.getClass().getName();
+                    boolean isDeathScreen = screenName.contains("DeathScreen")
+                            || screenName.contains("class_418");
+                    if (isDeathScreen) {
+                        // 尝试找到并点击重生按钮
+                        for (var button : current.children()) {
+                            if (button instanceof net.minecraft.client.gui.widget.ButtonWidget btn) {
+                                btn.onPress();
+                                break;
+                            }
+                        }
+                        // 如果按钮方式失败，直接调用 requestRespawn
+                        if (client.player != null) {
+                            client.player.requestRespawn();
+                        }
+                        client.setScreen(null);
+                        return "{\"ok\":true,\"action\":\"close_screen\",\"type\":\"respawn\"}";
+                    }
                     current.close();
                 }
                 client.setScreen(null);
                 return "{\"ok\":true,\"action\":\"close_screen\"}";
+            }
+            case "respawn" -> {
+                Screen current = client.currentScreen;
+                if (current != null) {
+                    String screenName = current.getClass().getName();
+                    boolean isDeathScreen = screenName.contains("DeathScreen")
+                            || screenName.contains("class_418");
+                    if (isDeathScreen) {
+                        for (var button : current.children()) {
+                            if (button instanceof net.minecraft.client.gui.widget.ButtonWidget btn) {
+                                btn.onPress();
+                                break;
+                            }
+                        }
+                        if (client.player != null) {
+                            client.player.requestRespawn();
+                        }
+                        client.setScreen(null);
+                        return "{\"ok\":true,\"action\":\"respawn\"}";
+                    }
+                    return "{\"ok\":false,\"error\":\"not_death_screen\"}";
+                }
+                return "{\"ok\":false,\"error\":\"no_screen\"}";
             }
             case "release_mouse" -> {
                 boolean captureMouse = config().captureMouseOnReleaseAction;
